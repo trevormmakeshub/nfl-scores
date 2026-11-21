@@ -6,8 +6,11 @@ Scores only. Games without both scores are left out. No odds and no model.
 from __future__ import annotations
 
 import csv
+import sys
+import time
+import urllib.error
 import urllib.request
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 URL = "https://github.com/nflverse/nflverse-data/releases/download/schedules/games.csv"
@@ -18,10 +21,26 @@ NOTES = ROOT / "NOTES.md"
 GAME_TYPES = {"REG", "WC", "DIV", "CON", "SB"}
 
 
-def main() -> None:
+def download_schedule() -> str:
     request = urllib.request.Request(URL, headers={"User-Agent": "nfl-scores/1.0"})
-    with urllib.request.urlopen(request, timeout=90) as response:
-        text = response.read().decode("utf-8")
+    last = "not tried"
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(request, timeout=90) as response:
+                return response.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            last = f"HTTP {exc.code}"
+            if exc.code in {404, 410}:
+                break
+        except Exception as exc:
+            last = f"{type(exc).__name__}: {exc}"
+        if attempt < 2:
+            time.sleep(2 * (attempt + 1))
+    raise SystemExit(f"schedule download failed: {last}")
+
+
+def main() -> None:
+    text = download_schedule()
     rows = []
     for game in csv.DictReader(text.splitlines()):
         if str(game.get("season")) != "2026":
@@ -53,6 +72,16 @@ def main() -> None:
     print(f"rows {len(rows)}")
     print(f"min date {rows[0]['date']}")
     print(f"max date {rows[-1]['date']}")
+    log_path = ROOT / "refresh.log"
+    with log_path.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(
+            f"{datetime.now().isoformat(timespec='seconds')} rows {len(rows)} "
+            f"min {rows[0]['date']} max {rows[-1]['date']}\n"
+        )
+    import subprocess
+    result = subprocess.run([sys.executable, str(ROOT / "scripts" / "validate_scores.py")], cwd=ROOT, check=False)
+    if result.returncode != 0:
+        raise SystemExit(result.returncode)
 
 
 def write_docs(rows: list[dict]) -> None:
